@@ -1,26 +1,32 @@
-# predict_demo.py
 import pandas as pd
 import joblib
 
-# 1. Load mô hình và danh sách cột
+# Load mô hình và danh sách đặc trưng
 model = joblib.load("slow_query_model.pkl")
 model_features = joblib.load("model_features.pkl")
 
-# 2. Nhập đặc trưng truy vấn cần dự đoán
-# ⚠️ CHỈ SỬA GIÁ TRỊ BÊN DƯỚI (phải đủ cột giống lúc train)
+# Nhập đặc trưng truy vấn
 new_query = {
-    'rows_examined': 25000,   # Số lượng dòng được quét (càng lớn càng có khả năng truy vấn chậm)
-    'uses_index': 0,          # Có sử dụng index không? (1: Có, 0: Không)
-    'ALL': 1,                 # Sử dụng kiểu truy xuất ALL (full table scan)? (1: Có, 0: Không)
-    'ref': 0,                 # Sử dụng kiểu truy xuất ref? (1: Có, 0: Không)
-    'const': 0,               # Sử dụng kiểu truy xuất const? (1: Có, 0: Không)
-    'index': 0,               # Sử dụng kiểu truy xuất index? (1: Có, 0: Không)
-    'range': 0                # Sử dụng kiểu truy xuất range? (1: Có, 0: Không)
+    'rows_examined': 15000,
+    'uses_index': 0,
+    'has_like': 1,
+    'has_group': 1,
+    'has_join': 1,
+    'ALL': 1,
+    'index': 0,
+    'ref': 0,
+    'const': 0,
+    'eq_ref': 1
 }
 
-# 3. Đưa về DataFrame đúng định dạng
-new_data = pd.DataFrame([new_query], columns=model_features)
+# Tự thêm các đặc trưng bị thiếu
+for col in model_features:
+    if col not in new_query:
+        new_query[col] = 0
 
-# 4. Dự đoán
+# Sắp xếp đúng thứ tự
+new_data = pd.DataFrame([new_query])[model_features]
+
+# Dự đoán
 result = model.predict(new_data)[0]
 print("📢 Truy vấn này:", "CHẬM ❌" if result else "NHANH ✅")
