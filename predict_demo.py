@@ -1,32 +1,60 @@
 import pandas as pd
 import joblib
+import os
 
-# Load mô hình và danh sách đặc trưng
+# ==== 1. Tải mô hình và đặc trưng ====
+if not os.path.exists("slow_query_model.pkl") or not os.path.exists("model_features.pkl"):
+    print("❌ Không tìm thấy mô hình. Hãy chạy train_model.py trước.")
+    exit(1)
+
 model = joblib.load("slow_query_model.pkl")
 model_features = joblib.load("model_features.pkl")
 
-# Nhập đặc trưng truy vấn
-new_query = {
-    'rows_examined': 15000,    # Số hàng được kiểm tra (cao = chậm)
-    'uses_index': 0,           # Sử dụng index (0: không, 1: có)
-    'has_like': 1,             # Có sử dụng toán tử LIKE (0: không, 1: có)
-    'has_group': 1,            # Có sử dụng GROUP BY (0: không, 1: có)
-    'has_join': 1,             # Có sử dụng JOIN (0: không, 1: có)
-    'ALL': 1,                  # Phương pháp ALL - quét toàn bộ bảng (0: không, 1: có)
-    'index': 0,                # Phương pháp index - quét index (0: không, 1: có)
-    'ref': 0,                  # Phương pháp ref - truy cập qua index (0: không, 1: có)
-    'const': 0,                # Phương pháp const - truy cập hằng số (0: không, 1: có)
-    'eq_ref': 1                # Phương pháp eq_ref - truy cập unique index (0: không, 1: có)
-}
+# ==== 2. Cho phép nhập từ nhiều nguồn ==== 
+USE_BATCH_CSV = False  # 👈 Đổi thành True nếu muốn test nhiều truy vấn
 
-# Tự thêm các đặc trưng bị thiếu
+if USE_BATCH_CSV and os.path.exists("sample_queries.csv"):
+    df_input = pd.read_csv("sample_queries.csv")
+    print(f"\n📄 Đang dự đoán {len(df_input)} truy vấn từ sample_queries.csv")
+else:
+    # === Truy vấn mẫu thủ công ===
+    new_query = {
+        'rows_examined': 25000,
+        'uses_index': 0,
+        'num_tables': 3,
+        'has_like': 1,
+        'has_group': 1,
+        'has_join': 1,
+        'has_order': 1,
+        'has_limit': 0,
+        'has_distinct': 0,
+        'ALL': 1,
+        'index': 0,
+        'ref': 0,
+        'const': 0,
+        'eq_ref': 0
+    }
+    df_input = pd.DataFrame([new_query])
+
+# ==== 3. Đảm bảo đầy đủ cột ====
 for col in model_features:
-    if col not in new_query:
-        new_query[col] = 0
+    if col not in df_input.columns:
+        df_input[col] = 0
 
-# Sắp xếp đúng thứ tự
-new_data = pd.DataFrame([new_query])[model_features]
+df_input = df_input[model_features]  # Đúng thứ tự
 
-# Dự đoán
-result = model.predict(new_data)[0]
-print("📢 Truy vấn này:", "CHẬM ❌" if result else "NHANH ✅")
+# ==== 4. Dự đoán ====
+df_input["prediction"] = model.predict(df_input)
+df_input["proba_slow"] = model.predict_proba(df_input)[:, 1]
+
+# ==== 5. In kết quả ====
+for i, row in df_input.iterrows():
+    print(f"\n🔎 Truy vấn {i+1}:")
+    print(row[model_features])
+    print(f"📈 Xác suất bị chậm: {row['proba_slow']:.2%}")
+    print("📢 Kết luận:", "❌ CHẬM" if row['prediction'] else "✅ NHANH")
+
+# ==== 6. Lưu kết quả (tuỳ chọn) ====
+os.makedirs("figures", exist_ok=True)
+df_input.to_csv("figures/prediction_result.csv", index=False)
+print("\n✅ Đã lưu kết quả dự đoán vào figures/prediction_result.csv")
