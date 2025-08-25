@@ -86,6 +86,12 @@ python suggest_fix.py
 
 ---
 
+### 📈 Bước 7: Sơ đồ pipeline (tùy chọn)
+```bash
+python plot_pipeline.py
+```
+➡️ Sinh ra file figures/pipeline_overview.png minh họa toàn bộ pipeline dự án.
+
 ## 📝 4. Lưu ý
 
 - Nếu sửa nội dung `queries.sql`, hãy chạy lại `log_queries.py` và `train_model.py`

@@ -3,7 +3,7 @@
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score, ConfusionMatrixDisplay
 import xgboost as xgb
 import matplotlib.pyplot as plt
 import joblib
@@ -56,6 +56,8 @@ X_train, X_test, y_train, y_test = train_test_split(
 )
 
 # ==== 8. Huấn luyện mô hình XGBoost ====
+eval_set = [(X_train, y_train), (X_test, y_test)]
+
 model = xgb.XGBClassifier(
     objective="binary:logistic",
     eval_metric="logloss",
@@ -65,11 +67,14 @@ model = xgb.XGBClassifier(
     random_state=42,
     use_label_encoder=False
 )
-model.fit(X_train, y_train)
+
+model.fit(
+    X_train, y_train,
+    eval_set=eval_set,
+    verbose=False
+)
 
 # ==== 9. Đánh giá mô hình ====
-from sklearn.metrics import accuracy_score, f1_score
-
 y_pred = model.predict(X_test)
 acc = accuracy_score(y_test, y_pred)
 f1 = f1_score(y_test, y_pred)
@@ -80,22 +85,54 @@ print("\n=== [Classification Report] ===")
 print(classification_report(y_test, y_pred))
 print(f"\n✅ Accuracy: {acc:.4f} | F1-score: {f1:.4f}")
 
+# Tạo thư mục lưu hình ảnh nếu chưa có
+os.makedirs("figures", exist_ok=True)
+
+# ==== 9b. Vẽ confusion matrix ====
+plt.figure(figsize=(5, 4))
+disp = ConfusionMatrixDisplay(confusion_matrix(y_test, y_pred), display_labels=["Nhanh (0)", "Chậm (1)"])
+disp.plot(cmap="Blues", values_format="d")
+plt.title("Confusion Matrix - Dự đoán truy vấn nhanh/chậm")
+plt.tight_layout()
+plt.savefig("figures/confusion_matrix.png")
+plt.close()
+print("✅ Đã lưu confusion matrix vào figures/confusion_matrix.png")
+
+# ==== 9c. Lưu classification report dạng bảng CSV ====
+report = classification_report(y_test, y_pred, output_dict=True)
+report_df = pd.DataFrame(report).transpose()
+report_df.to_csv("figures/classification_report.csv")
+print("📝 Đã lưu classification report dạng bảng tại figures/classification_report.csv")
+
 # ==== 10. Lưu mô hình và thông tin liên quan ====
 joblib.dump(model, "slow_query_model.pkl")
 joblib.dump(X.columns.tolist(), "model_features.pkl")
 print("✅ Đã lưu mô hình vào slow_query_model.pkl")
 print("✅ Đã lưu đặc trưng đầu vào vào model_features.pkl")
 
-# === 11. Lưu hình ảnh + biểu đồ ===
-os.makedirs("figures", exist_ok=True)
+# === 11. Lưu biểu đồ tầm quan trọng đặc trưng ===
+for imp_type in ["weight", "gain", "cover"]:
+    plt.figure(figsize=(10, 6))
+    xgb.plot_importance(model, importance_type=imp_type, height=0.5, show_values=False)
+    plt.title(f"Tầm quan trọng của đặc trưng ({imp_type})")
+    plt.tight_layout()
+    plt.savefig(f"figures/feature_importance_{imp_type}.png")
+    plt.close()
+    print(f"✅ Đã lưu feature importance ({imp_type}) vào figures/feature_importance_{imp_type}.png")
 
-plt.figure(figsize=(10, 6))
-xgb.plot_importance(model, height=0.5, importance_type='gain', show_values=False)
-plt.title("Tầm quan trọng của các đặc trưng")
+# ==== 11c. Learning curve ====
+results = model.evals_result()
+plt.figure(figsize=(8, 5))
+plt.plot(results["validation_0"]["logloss"], label="Train logloss")
+plt.plot(results["validation_1"]["logloss"], label="Test logloss")
+plt.xlabel("Iterations")
+plt.ylabel("Logloss")
+plt.title("Learning curve")
+plt.legend()
 plt.tight_layout()
-plt.savefig("figures/feature_importance.png")
+plt.savefig("figures/learning_curve.png")
 plt.close()
-print("✅ Đã lưu biểu đồ tầm quan trọng vào figures/feature_importance.png")
+print("✅ Đã lưu learning curve vào figures/learning_curve.png")
 
 # === 12. Lưu kết quả test vào file CSV ===
 df_test = X_test.copy()
@@ -109,15 +146,3 @@ with open("figures/metrics.txt", "w") as f:
     f.write(f"Accuracy: {acc:.4f}\n")
     f.write(f"F1-score: {f1:.4f}\n")
 print("📝 Đã lưu chỉ số đánh giá vào figures/metrics.txt")
-
-# Tạo thư mục lưu hình ảnh nếu chưa có
-os.makedirs("figures", exist_ok=True)
-
-# Lưu biểu đồ tầm quan trọng đặc trưng
-plt.figure(figsize=(10, 6))
-xgb.plot_importance(model, height=0.5, importance_type='gain', show_values=False)
-plt.title("Tầm quan trọng của các đặc trưng")
-plt.tight_layout()
-plt.savefig("figures/feature_importance.png")
-plt.close()
-print("✅ Đã lưu biểu đồ tầm quan trọng vào figures/feature_importance.png")

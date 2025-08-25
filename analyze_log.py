@@ -28,6 +28,16 @@ missing_cols = [col for col in required_cols if col not in df.columns]
 if missing_cols:
     raise ValueError(f"❌ Thiếu cột bắt buộc trong dữ liệu: {missing_cols}")
 
+# ==== 3b. Lưu mẫu dữ liệu log để chèn vào báo cáo ====
+sample_path = "figures/sample_query_log.csv"
+df.head(10).to_csv(sample_path, index=False)
+print(f"📄 Đã lưu 10 dòng đầu của query_log.csv tại: {sample_path}")
+
+# ==== 3c. Thống kê nhãn nhanh/chậm ====
+label_dist_path = "figures/label_distribution.csv"
+df["is_slow"].value_counts().to_csv(label_dist_path)
+print(f"📄 Đã lưu phân phối nhãn nhanh/chậm tại: {label_dist_path}")
+
 # ==== 4. Mô tả tổng quan ====
 print("📊 Tổng số truy vấn hợp lệ:", len(df))
 print("\n📌 Tổng quan dữ liệu số:")
@@ -102,6 +112,18 @@ plt.tight_layout()
 plt.savefig("figures/count_is_slow.png")
 plt.close()
 
+# ==== 11b. Pie chart phân bố nhanh/chậm ====
+plt.figure(figsize=(5, 5))
+df["is_slow"].value_counts().plot.pie(
+    autopct="%.1f%%", labels=["Nhanh (0)", "Chậm (1)"], colors=["#8fd694", "#f28b82"]
+)
+plt.title("Tỉ lệ truy vấn nhanh và chậm")
+plt.ylabel("")
+plt.tight_layout()
+plt.savefig("figures/pie_is_slow.png")
+plt.close()
+print("✅ Đã lưu pie chart phân bố nhanh/chậm vào figures/pie_is_slow.png")
+
 # ==== 12. Boxplot theo loại truy cập EXPLAIN.types ====
 if "types" in df.columns:
     top_types = df['types'].value_counts().nlargest(10).index.tolist()
@@ -127,6 +149,19 @@ if "query_raw" in df.columns:
     print("📝 Đã lưu top 10 truy vấn chậm nhất vào: figures/top10_slow_queries.csv")
 else:
     print("\n📛 Thiếu cột 'query_raw' để hiển thị truy vấn gốc.")
+
+# ==== 13b. Biểu đồ Top 10 truy vấn chậm nhất ====
+if "query_raw" in df.columns:
+    plt.figure(figsize=(10, 6))
+    sns.barplot(data=top10, x="exec_time_sec", y="query_raw", palette="Reds_r")
+    plt.xlabel("Thời gian (giây)")
+    plt.ylabel("Truy vấn (rút gọn)")
+    plt.yticks(ticks=range(len(top10)), labels=[q[:50]+"..." for q in top10["query_raw"]])
+    plt.title("Top 10 truy vấn chậm nhất")
+    plt.tight_layout()
+    plt.savefig("figures/bar_top10_slow_queries.png")
+    plt.close()
+    print("✅ Đã lưu bar chart top 10 truy vấn chậm nhất vào figures/bar_top10_slow_queries.png")
 
 # ==== 14. Tần suất từ khóa SQL phổ biến (token từ query_raw) ====
 if "query_raw" in df.columns:

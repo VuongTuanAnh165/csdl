@@ -135,3 +135,18 @@ with open(result_path, "w", newline='', encoding="utf-8") as f:
     ])
 
 print(f"\n📝 Đã lưu kết quả vào: {result_path}")
+
+# ==== 5b. Lưu chi tiết gợi ý ====
+detail_path = "figures/suggest_detail.txt"
+with open(detail_path, "w", encoding="utf-8") as f:
+    f.write("Truy vấn được phân tích:\n")
+    f.write(raw_query + "\n\n")
+    f.write(f"Xác suất chậm: {proba:.2%}\n")
+    f.write(f"Kết luận: {'CHẬM' if result else 'NHANH'}\n\n")
+    if suggestions:
+        f.write("Các gợi ý tối ưu:\n")
+        for s in suggestions:
+            f.write(f"- {s}\n")
+    else:
+        f.write("Không cần cải tiến.\n")
+print(f"📝 Đã lưu gợi ý chi tiết vào: {detail_path}")
