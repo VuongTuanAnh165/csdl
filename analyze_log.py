@@ -28,6 +28,9 @@ missing_cols = [col for col in required_cols if col not in df.columns]
 if missing_cols:
     raise ValueError(f"❌ Thiếu cột bắt buộc trong dữ liệu: {missing_cols}")
 
+# 🔧 Đảm bảo thư mục lưu hình ảnh và file CSV tồn tại
+os.makedirs("figures", exist_ok=True)
+
 # ==== 3b. Lưu mẫu dữ liệu log để chèn vào báo cáo ====
 sample_path = "figures/sample_query_log.csv"
 df.head(10).to_csv(sample_path, index=False)
