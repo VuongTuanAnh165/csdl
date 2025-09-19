@@ -1,5 +1,17 @@
 # analyze_log.py
 # ✅ Phân tích và trực quan hóa log truy vấn SQL - bản mở rộng cho môn AI nâng cao
+"""
+Tập lệnh tạo bảng số liệu và biểu đồ từ `query_log.csv` để phục vụ báo cáo.
+
+Chức năng chính:
+- Lọc bản ghi hợp lệ (status = OK), kiểm tra cột bắt buộc.
+- Lưu mẫu dữ liệu, phân phối nhãn, thống kê mô tả.
+- Vẽ histogram, boxplot theo cú pháp SQL và đặc trưng số; scatter, heatmap tương quan.
+- Xuất top 10 truy vấn chậm và tần suất từ khoá SQL phổ biến.
+
+Đầu vào: `query_log.csv` (tạo bởi `log_queries.py`).
+Đầu ra: file CSV/PNG trong thư mục `figures/`.
+"""
 
 import pandas as pd
 import seaborn as sns
@@ -55,6 +67,14 @@ plt.savefig("figures/hist_rows_examined.png")
 plt.close()
 
 # ==== 7. Boxplot theo cú pháp SQL ====
+# Các cột cú pháp và ý nghĩa (0/1):
+# - has_like: dùng LIKE (đặc biệt '%...%') dễ gây full-scan
+# - has_group: có GROUP BY
+# - has_join: có JOIN (nhiều bảng)
+# - has_order: có ORDER BY
+# - has_limit: có LIMIT (thường giảm khối lượng kết quả)
+# - has_distinct: có DISTINCT (loại trùng có thể tốn chi phí)
+# - has_function: dùng hàm trên cột (YEAR/LOWER/...) có thể vô hiệu hoá index
 syntax_cols = ['has_like', 'has_group', 'has_join', 'has_order', 'has_limit', 'has_distinct', 'has_function']
 for col in syntax_cols:
     if col in df.columns:
@@ -65,6 +85,9 @@ for col in syntax_cols:
         plt.close()
 
 # ==== 8. Phân tích feature mới ====
+# Một vài đặc trưng số mở rộng và ý nghĩa:
+# - num_predicates: số điều kiện WHERE/AND/OR → phức tạp lọc
+# - num_subqueries: số subquery lồng → tăng chi phí
 extra_numeric = ['num_predicates', 'num_subqueries']
 for col in extra_numeric:
     if col in df.columns:

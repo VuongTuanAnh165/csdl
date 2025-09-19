@@ -1,5 +1,15 @@
 # train_model.py
 # ✅ Huấn luyện mô hình XGBoost phân loại truy vấn SQL nhanh/chậm từ log đã khai phá
+"""
+Huấn luyện bộ phân loại XGBoost dự đoán truy vấn SQL chậm/nhanh từ `query_log.csv`.
+
+Các bước chính:
+- Đọc và lọc dữ liệu hợp lệ; loại outlier theo ngưỡng 99% và thêm `exec_time_log`.
+- Bổ sung các cột cú pháp (has_...), one-hot cho `types` từ EXPLAIN.
+- Chia train/test có stratify; tính `scale_pos_weight` để xử lý mất cân bằng.
+- Huấn luyện XGBClassifier; đánh giá Accuracy/F1, lưu báo cáo và biểu đồ (CM, ROC, FI).
+- Lưu model (`slow_query_model.pkl`) và danh sách feature (`model_features.pkl`).
+"""
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -29,7 +39,9 @@ if len(df) < 50:
     sys.exit(1)
 
 q99 = df["exec_time_sec"].quantile(0.99)
+# Loại bỏ outlier cực lớn (top 1%) để mô hình ổn định hơn
 df = df[df["exec_time_sec"] <= q99]
+# Biến đổi log giúp phân phối thời gian thực thi bớt lệch
 df["exec_time_log"] = np.log1p(df["exec_time_sec"])
 print(f"✅ Đã loại bỏ các truy vấn có exec_time_sec > {q99:.2f}s (top 1%) và thêm log-transform")
 
@@ -59,6 +71,13 @@ else:
     print("⚠️ Cột 'types' không có trong dữ liệu. Bỏ qua one-hot.")
 
 # ==== 6. Kết hợp đặc trưng đầu vào ====
+# Danh sách đặc trưng đầu vào và ý nghĩa:
+# - rows_examined: Tổng số dòng ước lượng đã quét (từ EXPLAIN) → độ nặng truy vấn.
+# - uses_index: Có dùng chỉ mục ở bất kỳ bước nào (1/0) → thường giảm thời gian.
+# - num_tables: Số bảng join → join nhiều thường tốn kém hơn.
+# - num_predicates: Số điều kiện lọc (WHERE/AND/OR) → lọc nhiều có thể nặng (tuỳ index).
+# - num_subqueries: Số subquery lồng nhau → subquery sâu thường chậm.
+# - exec_time_log: log(1+exec_time_sec) → giúp phân phối thời gian bớt lệch.
 base_features = [
     'rows_examined', 'uses_index', 'num_tables',
     'num_predicates', 'num_subqueries', 'exec_time_log'
@@ -79,6 +98,7 @@ print("Test :", pd.Series(y_test).value_counts(normalize=True))
 # ==== 8. Tính scale_pos_weight để xử lý imbalance ====
 pos = sum(y_train == 1)
 neg = sum(y_train == 0)
+# Tỷ lệ mẫu âm/dương để cân bằng loss khi lớp CHẬM hiếm
 scale_pos_weight = neg / pos if pos > 0 else 1
 
 # ==== 9. Huấn luyện mô hình XGBoost ====

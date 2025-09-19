@@ -1,6 +1,16 @@
 # suggest_fix.py
 # ✅ Gợi ý tối ưu hóa truy vấn SQL dựa trên đặc trưng đã khai phá
 # ✅ Phiên bản mở rộng bám sát các feature mới
+"""
+Sinh gợi ý tối ưu hoá cho một truy vấn dựa trên đặc trưng và model đã train.
+
+Cách dùng:
+- Lấy truy vấn từ `query_log.csv` theo id hoặc tìm gần đúng (USE_FROM_LOG=True).
+- Hoặc nhập tay một bộ đặc trưng tối thiểu tương thích `model_features.pkl`.
+
+Kết quả in ra màn hình, đồng thời lưu tóm tắt vào `figures/suggest_summary.csv`
+và chi tiết từng truy vấn vào `figures/suggest_detail.txt`.
+"""
 
 import pandas as pd
 import joblib
@@ -52,6 +62,7 @@ if USE_FROM_LOG:
 else:
     # ==== Nhập tay đặc trưng ====
     raw_query = "[Nhập tay]"
+    # Ý nghĩa đặc trưng tương tự predict_demo.py; đảm bảo tương thích với model_features.pkl
     query_features = {
         'rows_examined': 50000,
         'uses_index': 0,
@@ -111,6 +122,7 @@ if result:
         print(msg)
         suggestions.append(msg)
 
+    # Các ngưỡng dưới đây là kinh nghiệm/điểm gợi ý, có thể điều chỉnh theo dữ liệu
     if query_features.get('rows_examined', 0) > 20000:
         msg = "- 🧱 Quét quá nhiều dòng. Thêm điều kiện WHERE, partition table hoặc index."
         print(msg)

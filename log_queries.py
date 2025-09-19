@@ -4,6 +4,17 @@ import csv
 import re
 import pandas as pd
 
+"""
+Ghi log thực thi các truy vấn SQL và trích xuất đặc trưng phục vụ phân tích/huấn luyện.
+
+Luồng chính:
+- Đọc toàn bộ truy vấn trong file `queries.sql` (bỏ comment, gộp dòng, tách theo dấu ';').
+- Thiết lập timeout mỗi truy vấn, thực thi, đo `exec_time_sec`, đánh dấu `timeout_flag`/`status`.
+- Dùng `EXPLAIN` để lấy thông tin `rows_examined`, `uses_index`, `types`.
+- Suy ra các đặc trưng cú pháp: has_like/has_join/...; đếm số bảng, điều kiện WHERE, subquery.
+- Ghi từng bản ghi vào `query_log.csv`, sau đó gán nhãn `is_slow` theo median (timeout luôn là chậm).
+"""
+
 # Cấu hình timeout
 TIMEOUT = 10.0  # giây
 
@@ -18,6 +29,32 @@ conn = pymysql.connect(
 )
 
 def extract_features(cursor, query, exec_time, status, timeout_flag):
+    """Trích xuất đặc trưng từ một truy vấn SQL.
+
+    Tham số:
+        cursor: Cursor MySQL đã kết nối.
+        query (str): Câu truy vấn gốc.
+        exec_time (float): Thời gian thực thi (giây).
+        status (str): Trạng thái thực thi (OK / TIMEOUT / ERROR: ...).
+        timeout_flag (int): 1 nếu truy vấn bị timeout, ngược lại 0.
+
+    Trả về:
+        dict: Tập đặc trưng đã suy ra, bao gồm thông tin từ EXPLAIN nếu có.
+    """
+    # Ý nghĩa từng đặc trưng:
+    # - query_raw: Câu truy vấn gốc (dạng text) để đối chiếu/hiển thị.
+    # - exec_time_sec: Thời gian thực thi (giây) đo được khi chạy truy vấn.
+    # - status: Trạng thái chạy (OK/TIMEOUT/ERROR:...).
+    # - rows_examined: Tổng số dòng ước lượng đã quét theo EXPLAIN (cộng từng dòng).
+    # - uses_index: Có sử dụng chỉ mục ở bất kỳ bước nào trong kế hoạch (1) hay không (0).
+    # - types: Danh sách kiểu join/scan (MySQL `type`) như ALL, index, ref, eq_ref, range...
+    # - num_tables: Số lượng bảng tham gia (đếm FROM/JOIN).
+    # - num_predicates: Số điều kiện lọc ước lượng (WHERE/AND/OR).
+    # - num_subqueries: Số subquery lồng nhau (SL SELECT - 1).
+    # - has_like/has_group/has_join/has_order/has_limit/has_distinct/has_function:
+    #   Cờ nhị phân 0/1 cho thấy truy vấn có dùng các cấu trúc cú pháp này.
+    # - timeout_flag: 1 nếu truy vấn bị timeout theo cấu hình, ngược lại 0.
+    # - is_slow: Nhãn chậm (1) hay nhanh (0); sẽ cập nhật sau khi ghi log xong.
     features = {
         'query_raw': query,
         'exec_time_sec': round(exec_time, 4),
@@ -39,6 +76,7 @@ def extract_features(cursor, query, exec_time, status, timeout_flag):
         'is_slow': 0
     }
 
+    # Chuẩn hoá câu truy vấn về chữ thường để dò mẫu
     q = query.lower()
     features['has_like'] = int("like" in q)
     features['has_group'] = int("group by" in q)
@@ -53,6 +91,7 @@ def extract_features(cursor, query, exec_time, status, timeout_flag):
     features['num_subqueries'] = max(0, q.count("select") - 1)
 
     try:
+        # Lấy kế hoạch thực thi để ước lượng số dòng quét và việc dùng chỉ mục
         cursor.execute(f"EXPLAIN {query}")
         explain = cursor.fetchall()
         features['rows_examined'] = sum(int(row.get('rows') or 0) for row in explain)
@@ -83,12 +122,15 @@ with conn.cursor() as cursor, open("query_log.csv", "w", newline='', encoding="u
         sql_lines = f.readlines()
 
     # Bỏ comment và dòng trống
+    # Lưu ý: chúng ta gộp tất cả dòng thành một chuỗi để tách theo ';'
+    # nên các query nhiều dòng vẫn được nhận diện đúng.
     sql_clean = [line.strip() for line in sql_lines if line.strip() and not line.strip().startswith("--")]
     sql = " ".join(sql_clean)
     raw_queries = [q.strip() for q in sql.split(";") if q.strip()]
     print(f"📌 Đọc được {len(raw_queries)} query trong file queries.sql")
 
     # Lọc query SELECT
+    # Tránh chạy EXPLAIN/SELECT lồng EXPLAIN, chỉ lấy truy vấn bắt đầu bằng SELECT.
     queries = []
     for q in raw_queries:
         q_low = q.lower()
@@ -125,6 +167,7 @@ with conn.cursor() as cursor, open("query_log.csv", "w", newline='', encoding="u
         features = extract_features(cursor, query, exec_time, status, timeout_flag)
 
         if timeout_flag == 1:
+            # Timeout được coi là chậm bất kể median
             features["is_slow"] = 1
 
         writer.writerow(features)
@@ -133,6 +176,7 @@ with conn.cursor() as cursor, open("query_log.csv", "w", newline='', encoding="u
 conn.close()
 
 # === Gán nhãn nhanh/chậm theo median (không bỏ record) ===
+# Quy tắc: timeout = chậm; còn lại so sánh với median của toàn bộ exec_time_sec.
 df = pd.read_csv("query_log.csv")
 if not df.empty:
     median = df["exec_time_sec"].median()
