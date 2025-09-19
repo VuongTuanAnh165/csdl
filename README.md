@@ -26,7 +26,7 @@ Dự án này tập trung vào **khai phá log truy vấn SQL** để phát hi�
 
 Cài đặt:
 ```bash
-pip install pandas scikit-learn xgboost matplotlib seaborn joblib pymysql
+pip install pandas scikit-learn xgboost matplotlib seaborn joblib pymysql numpy
 ```
 
 ---

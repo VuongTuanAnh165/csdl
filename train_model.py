@@ -3,12 +3,16 @@
 
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, f1_score, ConfusionMatrixDisplay
+from sklearn.metrics import (
+    classification_report, confusion_matrix, accuracy_score,
+    f1_score, ConfusionMatrixDisplay, roc_curve, auc
+)
 import xgboost as xgb
 import matplotlib.pyplot as plt
 import joblib
 import os
 import sys
+import numpy as np
 
 # ==== 1. Đọc dữ liệu log từ file ====
 log_path = "query_log.csv"
@@ -19,10 +23,15 @@ if not os.path.exists(log_path):
 df = pd.read_csv(log_path)
 df = df[df['status'] == 'OK'].copy()  # Lọc bỏ truy vấn lỗi
 
-# ==== 2. Loại bỏ truy vấn dị biệt (outliers) ====
-q95 = df["exec_time_sec"].quantile(0.95)
-df = df[df["exec_time_sec"] <= q95]
-print(f"✅ Đã loại bỏ các truy vấn có exec_time_sec > {q95:.2f}s (top 5%)")
+# ==== 2. Loại bỏ truy vấn dị biệt (outliers) & log-transform ====
+if len(df) < 50:
+    print(f"⚠️ Dữ liệu chỉ có {len(df)} bản ghi → quá ít để huấn luyện. Hãy bổ sung query.")
+    sys.exit(1)
+
+q99 = df["exec_time_sec"].quantile(0.99)
+df = df[df["exec_time_sec"] <= q99]
+df["exec_time_log"] = np.log1p(df["exec_time_sec"])
+print(f"✅ Đã loại bỏ các truy vấn có exec_time_sec > {q99:.2f}s (top 1%) và thêm log-transform")
 
 # ==== 3. Kiểm tra nhãn mục tiêu ====
 if 'is_slow' not in df.columns or df['is_slow'].nunique() < 2:
@@ -32,11 +41,15 @@ if 'is_slow' not in df.columns or df['is_slow'].nunique() < 2:
 print("\n📊 Phân phối nhãn mục tiêu (is_slow):")
 print(df['is_slow'].value_counts(normalize=True))
 
-# ==== 4. Xử lý đặc trưng syntax (has_...) ====
-syntax_cols = ['has_like', 'has_group', 'has_join', 'has_order', 'has_limit', 'has_distinct']
+# ==== 4. Đặc trưng syntax (has_...) ====
+syntax_cols = [
+    'has_like', 'has_group', 'has_join',
+    'has_order', 'has_limit', 'has_distinct',
+    'has_function'
+]
 for col in syntax_cols:
     if col not in df.columns:
-        df[col] = 0  # Nếu thiếu cột, gán mặc định 0
+        df[col] = 0
 
 # ==== 5. One-hot encoding cho cột 'types' ====
 if 'types' in df.columns:
@@ -46,27 +59,46 @@ else:
     print("⚠️ Cột 'types' không có trong dữ liệu. Bỏ qua one-hot.")
 
 # ==== 6. Kết hợp đặc trưng đầu vào ====
-base_features = ['rows_examined', 'uses_index', 'num_tables'] + syntax_cols
+base_features = [
+    'rows_examined', 'uses_index', 'num_tables',
+    'num_predicates', 'num_subqueries', 'exec_time_log'
+] + syntax_cols
+
 X = pd.concat([df[base_features], types_dummies], axis=1)
 y = df['is_slow']
 
-# ==== 7. Tách dữ liệu train/test ====
+# ==== 7. Train/test split ====
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, stratify=y, random_state=42
 )
 
-# ==== 8. Huấn luyện mô hình XGBoost ====
+print("\n📊 Phân phối nhãn sau khi split:")
+print("Train:", pd.Series(y_train).value_counts(normalize=True))
+print("Test :", pd.Series(y_test).value_counts(normalize=True))
+
+# ==== 8. Tính scale_pos_weight để xử lý imbalance ====
+pos = sum(y_train == 1)
+neg = sum(y_train == 0)
+scale_pos_weight = neg / pos if pos > 0 else 1
+
+# ==== 9. Huấn luyện mô hình XGBoost ====
 eval_set = [(X_train, y_train), (X_test, y_test)]
 
 model = xgb.XGBClassifier(
     objective="binary:logistic",
-    eval_metric="logloss",
-    max_depth=5,
-    n_estimators=100,
-    learning_rate=0.1,
+    max_depth=6,
+    n_estimators=300,
+    learning_rate=0.05,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_alpha=0.1,
+    reg_lambda=1,
+    scale_pos_weight=scale_pos_weight,
     random_state=42,
-    use_label_encoder=False
+    eval_metric="logloss"   # ✅ đặt ở constructor
 )
+
+print(f"⚡ Đang dùng XGBoost {xgb.__version__}")
 
 model.fit(
     X_train, y_train,
@@ -74,75 +106,66 @@ model.fit(
     verbose=False
 )
 
-# ==== 9. Đánh giá mô hình ====
+if hasattr(model, "best_iteration") and model.best_iteration is not None:
+    print(f"✅ Best iteration: {model.best_iteration}")
+
+# ==== 10. Đánh giá ====
 y_pred = model.predict(X_test)
+y_proba = model.predict_proba(X_test)[:, 1]
+
 acc = accuracy_score(y_test, y_pred)
-f1 = f1_score(y_test, y_pred)
+f1 = f1_score(y_test, y_pred, zero_division=0)
 
 print("\n=== [Confusion Matrix] ===")
 print(confusion_matrix(y_test, y_pred))
+
 print("\n=== [Classification Report] ===")
-print(classification_report(y_test, y_pred))
+report_dict = classification_report(y_test, y_pred, zero_division=0, output_dict=True)
+print(classification_report(y_test, y_pred, zero_division=0))
+
 print(f"\n✅ Accuracy: {acc:.4f} | F1-score: {f1:.4f}")
 
-# Tạo thư mục lưu hình ảnh nếu chưa có
+# ==== 11. Lưu kết quả & biểu đồ ====
 os.makedirs("figures", exist_ok=True)
 
-# ==== 9b. Vẽ confusion matrix ====
+# Lưu classification report ra CSV
+pd.DataFrame(report_dict).transpose().to_csv("figures/classification_report.csv")
+print("✅ Đã lưu classification_report.csv")
+
+# Confusion matrix
 plt.figure(figsize=(5, 4))
-disp = ConfusionMatrixDisplay(confusion_matrix(y_test, y_pred), display_labels=["Nhanh (0)", "Chậm (1)"])
+disp = ConfusionMatrixDisplay(confusion_matrix(y_test, y_pred),
+                              display_labels=["Nhanh (0)", "Chậm (1)"])
 disp.plot(cmap="Blues", values_format="d")
-plt.title("Confusion Matrix - Dự đoán truy vấn nhanh/chậm")
+plt.title("Confusion Matrix - XGBoost")
 plt.tight_layout()
 plt.savefig("figures/confusion_matrix.png")
 plt.close()
-print("✅ Đã lưu confusion matrix vào figures/confusion_matrix.png")
 
-# ==== 9c. Lưu classification report dạng bảng CSV ====
-report = classification_report(y_test, y_pred, output_dict=True)
-report_df = pd.DataFrame(report).transpose()
-report_df.to_csv("figures/classification_report.csv")
-print("📝 Đã lưu classification report dạng bảng tại figures/classification_report.csv")
+# ROC
+fpr, tpr, _ = roc_curve(y_test, y_proba)
+roc_auc = auc(fpr, tpr)
+plt.figure(figsize=(6, 5))
+plt.plot(fpr, tpr, lw=2, label=f"AUC = {roc_auc:.2f}")
+plt.plot([0, 1], [0, 1], linestyle="--", color="gray")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve - XGBoost")
+plt.legend(loc="lower right")
+plt.savefig("figures/roc_curve.png")
+plt.close()
 
-# ==== 10. Lưu mô hình và thông tin liên quan ====
+# Feature importance
+if model.get_booster().get_score():
+    xgb.plot_importance(model, importance_type="gain", height=0.5, show_values=False)
+    plt.title("Feature Importance - Gain")
+    plt.tight_layout()
+    plt.savefig("figures/feature_importance.png")
+    plt.close()
+else:
+    print("⚠️ Không có cây nào được xây dựng → Bỏ qua vẽ Feature Importance.")
+
+# Lưu mô hình
 joblib.dump(model, "slow_query_model.pkl")
 joblib.dump(X.columns.tolist(), "model_features.pkl")
-print("✅ Đã lưu mô hình vào slow_query_model.pkl")
-print("✅ Đã lưu đặc trưng đầu vào vào model_features.pkl")
-
-# === 11. Lưu biểu đồ tầm quan trọng đặc trưng ===
-for imp_type in ["weight", "gain", "cover"]:
-    plt.figure(figsize=(10, 6))
-    xgb.plot_importance(model, importance_type=imp_type, height=0.5, show_values=False)
-    plt.title(f"Tầm quan trọng của đặc trưng ({imp_type})")
-    plt.tight_layout()
-    plt.savefig(f"figures/feature_importance_{imp_type}.png")
-    plt.close()
-    print(f"✅ Đã lưu feature importance ({imp_type}) vào figures/feature_importance_{imp_type}.png")
-
-# ==== 11c. Learning curve ====
-results = model.evals_result()
-plt.figure(figsize=(8, 5))
-plt.plot(results["validation_0"]["logloss"], label="Train logloss")
-plt.plot(results["validation_1"]["logloss"], label="Test logloss")
-plt.xlabel("Iterations")
-plt.ylabel("Logloss")
-plt.title("Learning curve")
-plt.legend()
-plt.tight_layout()
-plt.savefig("figures/learning_curve.png")
-plt.close()
-print("✅ Đã lưu learning curve vào figures/learning_curve.png")
-
-# === 12. Lưu kết quả test vào file CSV ===
-df_test = X_test.copy()
-df_test["y_true"] = y_test.values
-df_test["y_pred"] = y_pred
-df_test.to_csv("figures/model_test_result.csv", index=False)
-print("📝 Đã lưu kết quả dự đoán test vào figures/model_test_result.csv")
-
-# === 13. Lưu log độ chính xác vào file (nếu cần dùng cho báo cáo) ===
-with open("figures/metrics.txt", "w") as f:
-    f.write(f"Accuracy: {acc:.4f}\n")
-    f.write(f"F1-score: {f1:.4f}\n")
-print("📝 Đã lưu chỉ số đánh giá vào figures/metrics.txt")
+print("✅ Đã lưu mô hình và đặc trưng")

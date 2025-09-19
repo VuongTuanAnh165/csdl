@@ -1,6 +1,6 @@
 # suggest_fix.py
 # ✅ Gợi ý tối ưu hóa truy vấn SQL dựa trên đặc trưng đã khai phá
-# ✅ Dự đoán nhanh/chậm và lưu kết quả ra file phục vụ báo cáo
+# ✅ Phiên bản mở rộng bám sát các feature mới
 
 import pandas as pd
 import joblib
@@ -17,7 +17,7 @@ model = joblib.load("slow_query_model.pkl")
 features = joblib.load("model_features.pkl")
 
 # ==== 2. Chọn cách nhập truy vấn ====
-USE_FROM_LOG = True  # 👈 Đổi thành False để nhập tay
+USE_FROM_LOG = True  # 👈 Đổi thành False nếu muốn nhập tay
 
 if USE_FROM_LOG:
     if not os.path.exists("query_log.csv"):
@@ -53,20 +53,19 @@ else:
     # ==== Nhập tay đặc trưng ====
     raw_query = "[Nhập tay]"
     query_features = {
-        'rows_examined': 30000,
+        'rows_examined': 50000,
         'uses_index': 0,
         'num_tables': 3,
+        'num_predicates': 5,
+        'num_subqueries': 2,
         'has_like': 1,
         'has_group': 1,
         'has_join': 1,
         'has_order': 1,
         'has_limit': 0,
-        'has_distinct': 0,
-        'ALL': 1,
-        'index': 0,
-        'ref': 0,
-        'const': 0,
-        'eq_ref': 0
+        'has_distinct': 1,
+        'has_function': 1,
+        'ALL': 1, 'index': 0, 'ref': 0, 'const': 0, 'eq_ref': 0
     }
 
     for f in features:
@@ -88,45 +87,64 @@ if result:
     print("\n💡 GỢI Ý CẢI TIẾN TRUY VẤN:")
 
     if query_features.get('uses_index', 1) == 0:
-        msg = "- 🔍 Truy vấn không sử dụng chỉ mục. Kiểm tra điều kiện WHERE hoặc thêm INDEX phù hợp."
+        msg = "- 🔍 Truy vấn không sử dụng chỉ mục. Cân nhắc thêm INDEX hoặc COVERING INDEX."
         print(msg)
-        suggestions.append("Bổ sung chỉ mục")
+        suggestions.append(msg)
 
     if query_features.get('has_join'):
-        msg = "- 🔄 Truy vấn có JOIN nhiều bảng. Đảm bảo các khóa ngoại có chỉ mục."
+        msg = "- 🔄 JOIN nhiều bảng: kiểm tra index trên khóa ngoại, tránh JOIN thừa."
         print(msg)
-        suggestions.append("Tối ưu JOIN")
+        suggestions.append(msg)
 
     if query_features.get('has_like'):
-        msg = "- 🔠 LIKE '%...%' gây quét toàn bảng. Tránh nếu không có chỉ mục."
+        msg = "- 🔠 LIKE '%...%': gây full-scan. Dùng FULLTEXT INDEX hoặc ElasticSearch."
         print(msg)
-        suggestions.append("Hạn chế LIKE")
+        suggestions.append(msg)
 
     if query_features.get('has_group'):
-        msg = "- 📊 GROUP BY có thể chậm với bảng lớn. Dùng LIMIT nếu không cần toàn bộ."
+        msg = "- 📊 GROUP BY: thêm index hoặc dùng pre-aggregated table."
         print(msg)
-        suggestions.append("Giảm GROUP BY")
+        suggestions.append(msg)
 
     if query_features.get('has_order') and not query_features.get('has_limit'):
-        msg = "- 🪙 ORDER BY không kèm LIMIT có thể làm truy vấn toàn bảng."
+        msg = "- 🪙 ORDER BY không có LIMIT: nên thêm LIMIT hoặc index phù hợp."
         print(msg)
-        suggestions.append("ORDER BY nên kèm LIMIT")
+        suggestions.append(msg)
 
     if query_features.get('rows_examined', 0) > 20000:
-        msg = "- 🧱 Truy vấn xử lý quá nhiều dòng. Xem lại điều kiện WHERE hoặc chia nhỏ truy vấn."
+        msg = "- 🧱 Quét quá nhiều dòng. Thêm điều kiện WHERE, partition table hoặc index."
         print(msg)
-        suggestions.append("Giảm rows_examined")
+        suggestions.append(msg)
+
+    if query_features.get('num_predicates', 0) > 5:
+        msg = "- 🧮 Quá nhiều điều kiện WHERE: xem xét tối ưu filter hoặc tách truy vấn."
+        print(msg)
+        suggestions.append(msg)
+
+    if query_features.get('num_subqueries', 0) > 1:
+        msg = "- 🔁 Subquery lồng nhau: thay bằng JOIN hoặc WITH (CTE)."
+        print(msg)
+        suggestions.append(msg)
+
+    if query_features.get('has_function', 0) == 1:
+        msg = "- 📐 Hàm trên cột (VD: YEAR(date)): tránh để index có tác dụng."
+        print(msg)
+        suggestions.append(msg)
 
 else:
-    print("\n✅ Truy vấn đã được tối ưu tốt. Không cần cải tiến.")
+    print("\n✅ Truy vấn đã được tối ưu. Không cần cải tiến.")
 
 # ==== 5. Lưu kết quả ra file ====
 os.makedirs("figures", exist_ok=True)
-result_path = "figures/suggest_result.csv"
 
-with open(result_path, "w", newline='', encoding="utf-8") as f:
+# Lưu dạng CSV append nhiều truy vấn
+result_path = "figures/suggest_summary.csv"
+file_exists = os.path.exists(result_path)
+
+with open(result_path, "a", newline='', encoding="utf-8") as f:
     writer = csv.writer(f)
-    writer.writerow(["Truy vấn", "Xác suất chậm", "Kết luận", "Gợi ý"])
+    if not file_exists:
+        writer.writerow(["Truy vấn", "Xác suất chậm", "Kết luận", "Gợi ý"])
     writer.writerow([
         raw_query[:100] + "..." if len(raw_query) > 100 else raw_query,
         f"{proba:.2%}",
@@ -136,9 +154,10 @@ with open(result_path, "w", newline='', encoding="utf-8") as f:
 
 print(f"\n📝 Đã lưu kết quả vào: {result_path}")
 
-# ==== 5b. Lưu chi tiết gợi ý ====
+# ==== 6. Lưu chi tiết từng truy vấn ====
 detail_path = "figures/suggest_detail.txt"
-with open(detail_path, "w", encoding="utf-8") as f:
+with open(detail_path, "a", encoding="utf-8") as f:
+    f.write("\n===========================\n")
     f.write("Truy vấn được phân tích:\n")
     f.write(raw_query + "\n\n")
     f.write(f"Xác suất chậm: {proba:.2%}\n")
@@ -149,4 +168,3 @@ with open(detail_path, "w", encoding="utf-8") as f:
             f.write(f"- {s}\n")
     else:
         f.write("Không cần cải tiến.\n")
-print(f"📝 Đã lưu gợi ý chi tiết vào: {detail_path}")
